@@ -1,0 +1,129 @@
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+
+# Example Seurat integration workflow using 10X Genomics h5 inputs
+
+files <- list(
+  Sham_Female_738 = "path/to/sham_filtered_feature_bc_matrix.h5",
+  IRad_Female_740 = "path/to/irad_filtered_feature_bc_matrix.h5"
+)
+
+seurat_list <- lapply(names(files), function(sample_name) {
+  counts <- Read10X_h5(files[[sample_name]])
+  obj <- CreateSeuratObject(counts = counts, project = sample_name)
+  obj$sample <- sample_name
+  obj
+})
+names(seurat_list) <- names(files)
+
+for (nm in names(seurat_list)) {
+  seurat_list[[nm]][["percent.mt"]] <-
+    PercentageFeatureSet(seurat_list[[nm]], pattern = "^mt-")
+  
+  seurat_list[[nm]] <- subset(
+    seurat_list[[nm]],
+    subset = nFeature_RNA > 200 &
+             nFeature_RNA < 5000 &
+             percent.mt < 10
+  )
+}
+
+cat("Cell counts after filtering:\n")
+print(sapply(seurat_list, ncol))
+
+seurat_list <- lapply(seurat_list, function(obj) {
+  obj <- NormalizeData(obj, verbose = FALSE)
+  FindVariableFeatures(
+    obj,
+    selection.method = "vst",
+    nfeatures = 2000,
+    verbose = FALSE
+  )
+})
+
+anchors <- FindIntegrationAnchors(
+  object.list = seurat_list,
+  dims = 1:30
+)
+
+seurat_integrated <- IntegrateData(
+  anchorset = anchors,
+  dims = 1:30
+)
+
+seurat_integrated <- ScaleData(
+  seurat_integrated,
+  vars.to.regress = "percent.mt",
+  verbose = FALSE
+)
+
+seurat_integrated <- RunPCA(
+  seurat_integrated,
+  npcs = 30,
+  verbose = FALSE
+)
+
+ElbowPlot(seurat_integrated)
+
+pca_stdev <- seurat_integrated[["pca"]]@stdev
+pc_variance <- (pca_stdev^2) / sum(pca_stdev^2) * 100
+
+pc_table <- data.frame(
+  PC = paste0("PC", seq_along(pc_variance)),
+  VariancePercent = round(pc_variance, 2),
+  CumulativePercent = round(cumsum(pc_variance), 2)
+)
+
+print(pc_table[1:20, ])
+
+set.seed(1234)
+
+seurat_integrated <- FindNeighbors(
+  seurat_integrated,
+  dims = 1:15,
+  verbose = FALSE
+)
+
+seurat_integrated <- FindClusters(
+  seurat_integrated,
+  resolution = 0.3,
+  verbose = FALSE
+)
+
+seurat_integrated <- RunUMAP(
+  seurat_integrated,
+  dims = 1:14,
+  verbose = FALSE
+)
+
+DimPlot(
+  seurat_integrated,
+  group.by = "seurat_clusters",
+  label = TRUE,
+  label.size = 5,
+  pt.size = 0.5
+) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(face = "bold")
+  )
+
+DimPlot(
+  seurat_integrated,
+  group.by = "sample",
+  label = TRUE,
+  label.size = 5,
+  pt.size = 0.9
+) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_text(face = "bold"),
+    axis.title = element_text(face = "bold"),
+    legend.text = element_text(face = "bold")
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 4)))
